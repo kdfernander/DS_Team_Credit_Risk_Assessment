@@ -6,14 +6,17 @@ channels:
 dependencies:
   - python=3.10
   - pip
-  - numpy
-  - pandas
-  - matplotlib
+  - numpy=2.2.6
+  - pandas=2.3.3
+  - matplotlib=3.10.8
   - seaborn
-  - scikit-learn
+  - scikit-learn=1.7.2
   - jupyterlab
   - xgboost
   - lightgbm
   - imbalanced-learn
   - pip:
       - shap
+      - streamlit==1.56.0
+      - plotly==6.6.0
+      - joblib==1.5.3
