@@ -1,0 +1,35 @@
+Column,Description,Type,Used For
+TARGET,"Default flag (1 = default, 0 = no default)",Binary,Label
+CODE_GENDER,Applicant gender,Categorical,Demographics
+CNT_CHILDREN,Number of children,Numeric,Demographics
+NAME_FAMILY_STATUS,Applicant family status,Categorical,Demographics
+CNT_FAM_MEMBERS,Number of family members,Numeric,Demographics
+NAME_EDUCATION_TYPE,Highest education level,Categorical,Demographics
+DAYS_BIRTH,Applicant age in days before application,Numeric,Age feature
+AGE,Applicant age in years,Numeric,Risk factor
+NAME_INCOME_TYPE,Type of income source,Categorical,Employment & Income
+OCCUPATION_TYPE,Applicant occupation,Categorical,Employment & Income
+ORGANIZATION_TYPE,Type of employer organization,Categorical,Employment & Income
+DAYS_EMPLOYED,Days employed before application,Numeric,Employment history
+AMT_INCOME_TOTAL,Total annual income,Numeric,Repayment capacity
+FLAG_OWN_CAR,Whether applicant owns a car,Categorical,Stability
+OWN_CAR_AGE,Age of applicant's car,Numeric,Stability
+FLAG_OWN_REALTY,Whether applicant owns real estate,Categorical,Housing stability
+NAME_HOUSING_TYPE,Type of housing situation,Categorical,Housing stability
+DAYS_REGISTRATION,Days since registration at current address,Numeric,Stability
+DAYS_ID_PUBLISH,Days since ID document was last updated,Numeric,Stability
+NAME_CONTRACT_TYPE,Type of loan contract,Categorical,Loan characteristic
+AMT_CREDIT,Loan amount requested,Numeric,Loan characteristic
+AMT_ANNUITY,Loan annuity amount,Numeric,Loan repayment burden
+AMT_GOODS_PRICE,Price of goods for which loan is given,Numeric,Loan characteristic
+DTI_PROXY,Annuity divided by total income,Numeric,Debt burden
+LOAN_TO_INCOME,Credit amount divided by total income,Numeric,Affordability
+EXT_SOURCE_1,External credit risk score 1,Numeric,Credit risk signal
+EXT_SOURCE_2,External credit risk score 2,Numeric,Credit risk signal
+EXT_SOURCE_3,External credit risk score 3,Numeric,Credit risk signal
+AMT_REQ_CREDIT_BUREAU_HOUR,Credit bureau inquiries in last hour,Numeric,Inquiry behavior
+AMT_REQ_CREDIT_BUREAU_DAY,Credit bureau inquiries in last day,Numeric,Inquiry behavior
+AMT_REQ_CREDIT_BUREAU_WEEK,Credit bureau inquiries in last week,Numeric,Inquiry behavior
+AMT_REQ_CREDIT_BUREAU_MON,Credit bureau inquiries in last month,Numeric,Inquiry behavior
+AMT_REQ_CREDIT_BUREAU_QRT,Credit bureau inquiries in last quarter,Numeric,Inquiry behavior
+AMT_REQ_CREDIT_BUREAU_YEAR,Credit bureau inquiries in last year,Numeric,Inquiry behavior

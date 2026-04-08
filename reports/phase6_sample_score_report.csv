@@ -1,0 +1,6 @@
+Applicant_ID,PD,Decision,Risk_Tier,Reason_1,Reason_2,Reason_3
+100001,0.051020272239906385,REVIEW,B,AMT_GOODS_PRICE contributed lower risk,High requested credit amount,Younger applicant age
+100005,0.09281741760823017,REVIEW,C,AMT_GOODS_PRICE contributed lower risk,Younger applicant age,High requested credit amount
+100013,0.01824061292413901,APPROVE,A,AMT_GOODS_PRICE contributed lower risk,High requested credit amount,High annuity burden
+100028,0.035977350116507864,APPROVE,B,AMT_GOODS_PRICE contributed lower risk,High requested credit amount,High loan-to-income ratio
+100038,0.1504439080279877,DECLINE,D,AMT_GOODS_PRICE contributed lower risk,High requested credit amount,High loan-to-income ratio
