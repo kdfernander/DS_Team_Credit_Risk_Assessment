@@ -1,4 +1,17 @@
+"""
+Optional calibration workflow: uncalibrated RF vs sigmoid-calibrated RF, Brier/AUC, saved curves.
+
+Outputs align with exploratory notebooks; production scoring uses train_phase6.py instead.
+"""
+
 import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import joblib
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -16,8 +29,9 @@ from src.preprocess import (
 )
 
 
-def load_data(filepath="../data/home-credit-default-risk/application_train.csv"):
-    df = pd.read_csv(filepath)
+def load_data(filepath: str | Path | None = None):
+    path = Path(filepath) if filepath is not None else ROOT / "data" / "home-credit-default-risk" / "application_train.csv"
+    df = pd.read_csv(path)
     df = select_core_features(df)
     df = clean_features(df)
 
@@ -46,7 +60,7 @@ def build_random_forest_pipeline():
     ])
 
 
-def plot_calibration_curves(y_val, y_prob_before, y_prob_after, save_path):
+def plot_calibration_curves(y_val, y_prob_before, y_prob_after, save_path: str | Path):
     prob_true_before, prob_pred_before = calibration_curve(
         y_val, y_prob_before, n_bins=10
     )
@@ -63,13 +77,15 @@ def plot_calibration_curves(y_val, y_prob_before, y_prob_after, save_path):
     plt.title("Calibration Curve Comparison")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(save_path)
-    plt.show()
+    plt.savefig(save_path, dpi=120)
+    plt.close()
 
 
 def main():
-    os.makedirs("../models", exist_ok=True)
-    os.makedirs("../reports", exist_ok=True)
+    models_dir = ROOT / "models"
+    reports_dir = ROOT / "reports"
+    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(reports_dir, exist_ok=True)
 
     X_train, X_val, y_train, y_val = load_data()
 
@@ -110,16 +126,16 @@ def main():
         y_val,
         y_prob_before,
         y_prob_after,
-        save_path="../reports/calibration_curve.png"
+        save_path=reports_dir / "calibration_curve.png",
     )
 
-    joblib.dump(base_pipeline, "../models/random_forest_pipeline.joblib")
-    joblib.dump(calibrated_model, "../models/calibrated_random_forest.joblib")
+    joblib.dump(base_pipeline, models_dir / "random_forest_pipeline.joblib")
+    joblib.dump(calibrated_model, models_dir / "calibrated_random_forest.joblib")
 
     print("\nSaved files:")
-    print("- ../models/random_forest_pipeline.joblib")
-    print("- ../models/calibrated_random_forest.joblib")
-    print("- ../reports/calibration_curve.png")
+    print(f"- {models_dir / 'random_forest_pipeline.joblib'}")
+    print(f"- {models_dir / 'calibrated_random_forest.joblib'}")
+    print(f"- {reports_dir / 'calibration_curve.png'}")
 
 
 if __name__ == "__main__":

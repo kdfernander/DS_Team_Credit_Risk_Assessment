@@ -1,9 +1,22 @@
+"""
+Phase 6 training: calibrated Random Forest for PD + logistic regression for reason codes.
+
+Batch-scores application_test with a single sparse/dense transform of the reason pipeline
+(one transform for all rows) instead of per-row transforms — large speedup on full test sets.
+"""
 
 import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import joblib
 import numpy as np
 import pandas as pd
-
+from scipy import sparse
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
@@ -11,7 +24,6 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 
 from src.preprocess import CORE_FEATURES, clean_features, build_preprocessor
-
 
 APPROVE_THRESHOLD = 0.05
 REVIEW_THRESHOLD = 0.12
@@ -45,6 +57,28 @@ REASON_CODE_LABELS = {
 }
 
 
+def _is_git_lfs_pointer(path: Path) -> bool:
+    """Detect Git LFS pointer files (common for large Kaggle CSVs in git repos)."""
+    try:
+        if not path.exists() or not path.is_file():
+            return False
+        head = path.open("rb").read(200).decode("utf-8", errors="ignore")
+        return "version https://git-lfs.github.com/spec/v1" in head
+    except OSError:
+        return False
+
+
+def _ensure_real_file(path: Path, what: str) -> None:
+    """Fail fast with an actionable message when required inputs are missing."""
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {what}: {path}")
+    if _is_git_lfs_pointer(path):
+        raise RuntimeError(
+            f"{what} looks like a Git LFS pointer, not the real file: {path}\n"
+            "Fix: run `git lfs pull` (or re-clone with LFS enabled), then retry."
+        )
+
+
 def select_core_features_for_scoring(df: pd.DataFrame, include_target: bool = False) -> pd.DataFrame:
     """
     In training data, TARGET exists. In application_test.csv it does not.
@@ -57,8 +91,10 @@ def select_core_features_for_scoring(df: pd.DataFrame, include_target: bool = Fa
     return df[required].copy()
 
 
-def load_training_data(filepath: str = "../data/home-credit-default-risk/application_train.csv"):
-    df = pd.read_csv(filepath)
+def load_training_data(filepath: str | Path | None = None):
+    path = Path(filepath) if filepath is not None else ROOT / "data" / "home-credit-default-risk" / "application_train.csv"
+    _ensure_real_file(path, "training CSV (application_train.csv)")
+    df = pd.read_csv(path)
     df = select_core_features_for_scoring(df, include_target=True)
     df = clean_features(df)
 
@@ -74,8 +110,10 @@ def load_training_data(filepath: str = "../data/home-credit-default-risk/applica
     )
 
 
-def load_scoring_data(filepath: str = "../data/home-credit-default-risk/application_test.csv"):
-    df = pd.read_csv(filepath)
+def load_scoring_data(filepath: str | Path | None = None):
+    path = Path(filepath) if filepath is not None else ROOT / "data" / "home-credit-default-risk" / "application_test.csv"
+    _ensure_real_file(path, "scoring CSV (application_test.csv)")
+    df = pd.read_csv(path)
 
     applicant_ids = None
     if "SK_ID_CURR" in df.columns:
@@ -176,28 +214,21 @@ def _reason_label(base_feature: str, contribution: float) -> str:
     return f"{base_feature} contributed {direction} risk"
 
 
-def generate_reason_codes(reason_pipeline: Pipeline, X_sample: pd.DataFrame, top_n: int = 3):
-    preprocess = reason_pipeline.named_steps["preprocess"]
-    model = reason_pipeline.named_steps["model"]
-
-    X_transformed = preprocess.transform(X_sample)
-    feature_names = preprocess.get_feature_names_out()
-    coefficients = model.coef_[0]
-
-    if hasattr(X_transformed, "toarray"):
-        row_values = X_transformed.toarray()[0]
-    else:
-        row_values = np.asarray(X_transformed)[0]
-
-    contributions = row_values * coefficients
-
+def _reasons_for_one_row(
+    feature_names: np.ndarray,
+    row: np.ndarray,
+    coefficients: np.ndarray,
+    top_n: int,
+) -> list[str]:
+    """Top reason strings for a single transformed feature row (same logic as legacy loop)."""
+    contributions = row * coefficients
     ranked_idx = np.argsort(np.abs(contributions))[::-1]
 
     reasons = []
     seen = set()
 
     for idx in ranked_idx:
-        if row_values[idx] == 0:
+        if row[idx] == 0:
             continue
 
         base_feature = _safe_feature_name(feature_names[idx])
@@ -217,6 +248,53 @@ def generate_reason_codes(reason_pipeline: Pipeline, X_sample: pd.DataFrame, top
     return reasons
 
 
+def generate_reason_codes(reason_pipeline: Pipeline, X_sample: pd.DataFrame, top_n: int = 3):
+    """Explain one row (used by API-style calls and tests)."""
+    preprocess = reason_pipeline.named_steps["preprocess"]
+    model = reason_pipeline.named_steps["model"]
+
+    X_transformed = preprocess.transform(X_sample)
+    feature_names = preprocess.get_feature_names_out()
+    coefficients = model.coef_[0]
+
+    if sparse.issparse(X_transformed):
+        row_values = X_transformed.toarray()[0]
+    else:
+        row_values = np.asarray(X_transformed)[0]
+
+    return _reasons_for_one_row(feature_names, row_values, coefficients, top_n)
+
+
+def generate_reason_codes_batch(reason_pipeline: Pipeline, X_test: pd.DataFrame, top_n: int = 3) -> list[list[str]]:
+    """
+    Vectorized explanation path: one preprocess.transform(X_test) for all applicants.
+
+    Avoids O(n) full pipeline transforms on large test sets (the dominant cost for
+    generating reason codes).
+    """
+    preprocess = reason_pipeline.named_steps["preprocess"]
+    model = reason_pipeline.named_steps["model"]
+
+    X_transformed = preprocess.transform(X_test)
+    feature_names = preprocess.get_feature_names_out()
+    coefficients = model.coef_[0]
+
+    n_samples = X_test.shape[0]
+    out: list[list[str]] = []
+
+    if sparse.issparse(X_transformed):
+        X_csr = X_transformed.tocsr()
+        for i in range(n_samples):
+            row = X_csr.getrow(i).toarray().ravel()
+            out.append(_reasons_for_one_row(feature_names, row, coefficients, top_n))
+    else:
+        X_dense = np.asarray(X_transformed)
+        for i in range(n_samples):
+            out.append(_reasons_for_one_row(feature_names, X_dense[i].ravel(), coefficients, top_n))
+
+    return out
+
+
 def score_applicant(scoring_model, reason_pipeline, sample: pd.DataFrame):
     pd_score = float(scoring_model.predict_proba(sample)[0, 1])
 
@@ -227,19 +305,19 @@ def score_applicant(scoring_model, reason_pipeline, sample: pd.DataFrame):
         "reason_codes": generate_reason_codes(reason_pipeline, sample, top_n=3)
     }
 
+
 def score_dataset(scoring_model, reason_pipeline, applicant_ids, X_test):
-    print("Scoring entire dataset at once...")
+    print("Scoring entire dataset (vectorized PD + batch reason codes)...")
 
     pd_scores = scoring_model.predict_proba(X_test)[:, 1]
     decisions = [get_decision(pd) for pd in pd_scores]
     risk_tiers = [get_risk_tier(pd) for pd in pd_scores]
 
+    reasons_all = generate_reason_codes_batch(reason_pipeline, X_test, top_n=3)
+
     results = []
-
     for i in range(len(X_test)):
-        sample = X_test.iloc[[i]].copy()
-        reasons = generate_reason_codes(reason_pipeline, sample, top_n=3)
-
+        reasons = reasons_all[i]
         results.append({
             "Applicant_ID": applicant_ids.iloc[i] if hasattr(applicant_ids, "iloc") else applicant_ids[i],
             "PD": pd_scores[i],
@@ -249,13 +327,15 @@ def score_dataset(scoring_model, reason_pipeline, applicant_ids, X_test):
             "Reason_2": reasons[1] if len(reasons) > 1 else None,
             "Reason_3": reasons[2] if len(reasons) > 2 else None,
         })
-    import pandas as pd
 
     return pd.DataFrame(results)
 
+
 def main():
-    os.makedirs("../models", exist_ok=True)
-    os.makedirs("../reports", exist_ok=True)
+    models_dir = ROOT / "models"
+    reports_dir = ROOT / "reports"
+    os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(reports_dir, exist_ok=True)
 
     print("Loading training data...")
     X_train, X_val, y_train, y_val = load_training_data()
@@ -269,22 +349,22 @@ def main():
     reason_pipeline.fit(X_train, y_train)
 
     print("Saving trained phase 6 artifacts...")
-    joblib.dump(scoring_model, "../models/phase6_calibrated_scoring_model.joblib")
-    joblib.dump(reason_pipeline, "../models/phase6_reason_code_logreg.joblib")
+    joblib.dump(scoring_model, models_dir / "phase6_calibrated_scoring_model.joblib")
+    joblib.dump(reason_pipeline, models_dir / "phase6_reason_code_logreg.joblib")
 
     print("Loading application_test.csv for scoring...")
-    applicant_ids, X_test = load_scoring_data("../data/home-credit-default-risk/application_test.csv")
+    applicant_ids, X_test = load_scoring_data()
 
     predictions_df = score_dataset(scoring_model, reason_pipeline, applicant_ids, X_test)
-    predictions_df.to_csv("../reports/phase6_application_test_predictions.csv", index=False)
+    predictions_df.to_csv(reports_dir / "phase6_application_test_predictions.csv", index=False)
 
     sample_report = predictions_df.head(5).copy()
-    sample_report.to_csv("../reports/phase6_sample_score_report.csv", index=False)
+    sample_report.to_csv(reports_dir / "phase6_sample_score_report.csv", index=False)
 
     print("\n=== PHASE 6 SAMPLE SCORE REPORT ===")
     for _, row in sample_report.iterrows():
         print("\n----------------------------------------")
-        print(f"Applicant ID: {row['Applicant_ID']}") #changed from SK_ID_CURR for debug
+        print(f"Applicant ID: {row['Applicant_ID']}")
         print(f"PD: {row['PD']}")
         print(f"Decision: {row['Decision']}")
         print(f"Risk Tier: {row['Risk_Tier']}")
@@ -294,10 +374,10 @@ def main():
                 print(f" - {row[col]}")
 
     print("\nSaved files:")
-    print("- ../models/phase6_calibrated_scoring_model.joblib")
-    print("- ../models/phase6_reason_code_logreg.joblib")
-    print("- ../reports/phase6_application_test_predictions.csv")
-    print("- ../reports/phase6_sample_score_report.csv")
+    print(f"- {models_dir / 'phase6_calibrated_scoring_model.joblib'}")
+    print(f"- {models_dir / 'phase6_reason_code_logreg.joblib'}")
+    print(f"- {reports_dir / 'phase6_application_test_predictions.csv'}")
+    print(f"- {reports_dir / 'phase6_sample_score_report.csv'}")
 
 
 if __name__ == "__main__":

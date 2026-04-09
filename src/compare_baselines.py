@@ -1,3 +1,16 @@
+"""
+Compare several sklearn classifiers behind the shared preprocessor (train/val metrics).
+
+Useful for model selection; Phase 6 production training is train_phase6.py.
+"""
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import pandas as pd
 
 from sklearn.model_selection import train_test_split
@@ -21,8 +34,9 @@ from src.preprocess import (
 )
 
 
-def load_data(filepath="../data/home-credit-default-risk/application_train.csv"):
-    df = pd.read_csv(filepath)
+def load_data(filepath: str | Path | None = None):
+    path = Path(filepath) if filepath is not None else ROOT / "data" / "home-credit-default-risk" / "application_train.csv"
+    df = pd.read_csv(path)
     df = select_core_features(df)
     df = clean_features(df)
 

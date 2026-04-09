@@ -1,5 +1,13 @@
+"""
+Streamlit credit-risk dashboard: scoring, portfolio analytics, and glossary.
+
+Performance: cached model loads, partial CSV reads for application_test, cached merged
+portfolio, vectorized reason-string normalization, and Plotly charts tuned per theme.
+"""
+
 import sys
 from pathlib import Path
+from typing import Any
 
 import joblib
 import numpy as np
@@ -19,7 +27,7 @@ SCORING_MODEL_PATH = ROOT / "models" / "phase6_calibrated_scoring_model.joblib"
 REASON_MODEL_PATH = ROOT / "models" / "phase6_reason_code_logreg.joblib"
 APPLICATION_TEST_PATH = ROOT / "data" / "home-credit-default-risk" / "application_test.csv"
 PREDICTIONS_PATH = ROOT / "reports" / "phase6_application_test_predictions.csv"
-DATA_DICTIONARY_PATH = ROOT / "data_dictionary.csv"
+DATA_DICTIONARY_PATH = ROOT / "data" / "data_dictionary.csv"
 
 INFERENCE_FEATURES = [col for col in CORE_FEATURES if col != "TARGET"]
 DEMOGRAPHIC_COLUMNS = [
@@ -28,25 +36,105 @@ DEMOGRAPHIC_COLUMNS = [
     "OCCUPATION_TYPE", "ORGANIZATION_TYPE"
 ]
 
-ORANGE = "#F97316"
-ORANGE_DARK = "#C2410C"
-ORANGE_LIGHT = "#FFEDD5"
-AMBER = "#F59E0B"
-SLATE = "#334155"
-RED = "#EF4444"
-GREEN = "#10B981"
+# Columns needed from application_test.csv for merge + tables (avoids loading ~120 columns).
+_APPLICATION_TEST_COLUMNS = sorted(
+    set(DEMOGRAPHIC_COLUMNS)
+    | {
+        "SK_ID_CURR",
+        "AMT_INCOME_TOTAL",
+        "AMT_CREDIT",
+        "AMT_ANNUITY",
+        "NAME_EDUCATION_TYPE",
+        "NAME_INCOME_TYPE",
+        "NAME_CONTRACT_TYPE",
+    }
+)
+
+# --- Semantic colors (shared); charts also use theme-specific surfaces below. ---
+GREEN = "#059669"
+AMBER = "#D97706"
+RED = "#DC2626"
+ORANGE = "#EA580C"
 DECISION_COLORS = {
     "APPROVE": GREEN,
     "REVIEW": AMBER,
     "DECLINE": RED,
 }
+# Distinct, colorblind-friendly tier ramp (green → red).
 RISK_TIER_COLORS = {
-    "A": "#10B981",
-    "B": "#84CC16",
-    "C": "#F59E0B",
-    "D": "#F97316",
-    "E": "#EF4444",
+    "A": "#0D9488",
+    "B": "#65A30D",
+    "C": "#D97706",
+    "D": "#EA580C",
+    "E": "#DC2626",
 }
+
+# Light / dark UI tokens: text meets ~4.5:1 on respective backgrounds for body copy.
+THEME_LIGHT: dict[str, Any] = {
+    "name": "light",
+    "bg_app": "linear-gradient(180deg, #fff7ed 0%, #ffffff 28%)",
+    "bg_surface": "#ffffff",
+    "text_primary": "#0f172a",
+    "text_muted": "#475569",
+    "accent": "#C2410C",
+    "accent_soft": "#FFEDD5",
+    "border": "#fed7aa",
+    "chart_paper": "#ffffff",
+    "chart_plot": "#f8fafc",
+    "chart_grid": "#e2e8f0",
+    "chart_font": "#0f172a",
+    "accent_bar": "#EA580C",
+}
+
+THEME_DARK: dict[str, Any] = {
+    "name": "dark",
+    "bg_app": "linear-gradient(180deg, #0f172a 0%, #020617 40%)",
+    "bg_surface": "#1e293b",
+    "text_primary": "#f1f5f9",
+    "text_muted": "#94a3b8",
+    "accent": "#fb923c",
+    "accent_soft": "#431407",
+    "border": "#334155",
+    "chart_paper": "#1e293b",
+    "chart_plot": "#0f172a",
+    "chart_grid": "#334155",
+    "chart_font": "#e2e8f0",
+    "accent_bar": "#fb923c",
+}
+
+PLOTLY_CONFIG = {
+    "displayLogo": False,
+    "modeBarButtonsToRemove": ["lasso2d", "select2d"],
+    "toImageButtonOptions": {"filename": "credit-risk-chart"},
+}
+
+
+def _is_git_lfs_pointer(path: Path) -> bool:
+    """
+    Detect Git LFS pointer files.
+
+    In repos that use LFS, large CSVs may be present as small text pointers until
+    `git lfs pull` (or similar) downloads the real content. Pandas then errors in
+    confusing ways, so we fail fast with a clear message.
+    """
+    try:
+        if not path.exists() or not path.is_file():
+            return False
+        head = path.open("rb").read(200).decode("utf-8", errors="ignore")
+        return "version https://git-lfs.github.com/spec/v1" in head
+    except OSError:
+        return False
+
+
+def _ensure_real_file(path: Path, what: str) -> None:
+    """Raise a helpful error if a required file is missing or is an LFS pointer."""
+    if not path.exists():
+        raise FileNotFoundError(f"Missing {what}: {path}")
+    if _is_git_lfs_pointer(path):
+        raise RuntimeError(
+            f"{what} looks like a Git LFS pointer, not the real file: {path}\n"
+            "Fix: run `git lfs pull` (or re-clone with LFS enabled), then retry."
+        )
 
 FEATURE_LABELS = {
     "Applicant_ID": "Applicant ID",
@@ -129,92 +217,133 @@ DEFAULT_GLOSSARY_ROWS = [
 ]
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner="Loading scoring models…")
 def load_models():
+    """joblib pipelines are large; cache for the whole session."""
     scoring_model = joblib.load(SCORING_MODEL_PATH)
     reason_model = joblib.load(REASON_MODEL_PATH)
     return scoring_model, reason_model
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Loading predictions…")
 def load_prediction_data():
     if not PREDICTIONS_PATH.exists():
         return None
+    _ensure_real_file(PREDICTIONS_PATH, "predictions report")
     return pd.read_csv(PREDICTIONS_PATH)
 
 
-@st.cache_data
+def _application_test_usecols() -> list[str]:
+    """Only request columns that exist in the CSV (Kaggle schema-stable)."""
+    if not APPLICATION_TEST_PATH.exists():
+        return []
+    _ensure_real_file(APPLICATION_TEST_PATH, "application_test.csv")
+    header = pd.read_csv(APPLICATION_TEST_PATH, nrows=0).columns
+    return [c for c in _APPLICATION_TEST_COLUMNS if c in header]
+
+
+@st.cache_data(show_spinner="Loading application attributes…")
 def load_application_test_data():
+    """
+    Narrow read: demographics + key loan fields only (faster I/O and lower memory).
+    """
     if not APPLICATION_TEST_PATH.exists():
         return None
-    return pd.read_csv(APPLICATION_TEST_PATH)
+    _ensure_real_file(APPLICATION_TEST_PATH, "application_test.csv")
+    usecols = _application_test_usecols()
+    if not usecols:
+        return pd.read_csv(APPLICATION_TEST_PATH)
+    return pd.read_csv(APPLICATION_TEST_PATH, usecols=usecols)
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Building glossary…")
 def load_glossary_data():
     if DATA_DICTIONARY_PATH.exists():
         glossary = pd.read_csv(DATA_DICTIONARY_PATH)
     else:
         glossary = pd.DataFrame(DEFAULT_GLOSSARY_ROWS, columns=["Column", "Description", "Type", "Used For"])
 
-    glossary["Display Name"] = glossary["Column"].map(lambda x: FEATURE_LABELS.get(x, x.replace("_", " ").title()))
+    glossary["Display Name"] = glossary["Column"].map(
+        lambda x: FEATURE_LABELS.get(x, x.replace("_", " ").title())
+    )
     return glossary[["Display Name", "Description", "Type", "Used For"]]
 
 
+@st.cache_data(show_spinner="Preparing portfolio view…")
+def load_merged_portfolio() -> pd.DataFrame | None:
+    """Single cached merge + normalization path used by dashboard tabs."""
+    pred_df = load_prediction_data()
+    app_df = load_application_test_data()
+    return merge_predictions_with_inputs(pred_df, app_df)
 
-def inject_theme():
+
+def inject_theme(theme: dict[str, Any]) -> None:
+    """Inject CSS from theme tokens (light/dark) for Streamlit chrome + our cards."""
+    t = theme
     st.markdown(
         f"""
         <style>
         .stApp {{
-            background: linear-gradient(180deg, #fff7ed 0%, #ffffff 22%);
+            background: {t["bg_app"]};
+            color: {t["text_primary"]};
         }}
         .block-container {{
             padding-top: 1.5rem;
             padding-bottom: 2rem;
         }}
         h1, h2, h3 {{
-            color: {ORANGE_DARK};
+            color: {t["accent"]};
+        }}
+        p, label, span {{
+            color: {t["text_primary"]};
         }}
         [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {{
             font-size: 1rem;
             font-weight: 600;
+            color: {t["text_primary"]};
         }}
         [data-baseweb="tab-list"] {{
             gap: 0.5rem;
         }}
         [data-baseweb="tab"] {{
-            background-color: #fff7ed;
+            background-color: {t["accent_soft"]};
             border-radius: 10px 10px 0 0;
             padding: 0.5rem 1rem;
         }}
         [aria-selected="true"] {{
-            background-color: {ORANGE_LIGHT} !important;
-            border-bottom: 3px solid {ORANGE};
+            background-color: {t["accent_soft"]} !important;
+            border-bottom: 3px solid {t["accent"]};
         }}
         div[data-testid="stMetric"] {{
-            background: white;
-            border: 1px solid #fed7aa;
+            background: {t["bg_surface"]};
+            border: 1px solid {t["border"]};
             padding: 1rem;
             border-radius: 14px;
-            box-shadow: 0 4px 14px rgba(249, 115, 22, 0.08);
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+        }}
+        div[data-testid="stMetric"] label {{
+            color: {t["text_muted"]};
+        }}
+        div[data-testid="stMetric"] [data-testid="stMetricValue"] {{
+            color: {t["text_primary"]};
         }}
         div[data-testid="stForm"] {{
-            background: rgba(255,255,255,0.9);
-            border: 1px solid #fed7aa;
+            background: {t["bg_surface"]};
+            border: 1px solid {t["border"]};
             padding: 1rem 1rem 0.5rem 1rem;
             border-radius: 16px;
         }}
         .insight-card {{
-            background: white;
-            border-left: 6px solid {ORANGE};
+            background: {t["bg_surface"]};
+            border-left: 6px solid {t["accent"]};
             border-radius: 14px;
             padding: 0.9rem 1rem;
-            box-shadow: 0 4px 14px rgba(249, 115, 22, 0.08);
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
             margin-bottom: 0.75rem;
+            color: {t["text_primary"]};
         }}
         .insight-title {{
-            color: {ORANGE_DARK};
+            color: {t["accent"]};
             font-weight: 700;
             margin-bottom: 0.2rem;
         }}
@@ -223,12 +352,27 @@ def inject_theme():
             padding: 0.25rem 0.7rem;
             border-radius: 999px;
             font-weight: 700;
-            color: white;
+            color: #ffffff;
             margin-right: 0.4rem;
+        }}
+        [data-testid="stSidebar"] {{
+            background-color: {t["bg_surface"]};
         }}
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+
+def apply_chart_theme(fig, theme: dict[str, Any]):
+    """Consistent Plotly paper/plot/grid/font for light or dark surfaces."""
+    fig.update_layout(
+        paper_bgcolor=theme["chart_paper"],
+        plot_bgcolor=theme["chart_plot"],
+        font=dict(color=theme["chart_font"], family="system-ui, Segoe UI, sans-serif", size=13),
+        xaxis=dict(gridcolor=theme["chart_grid"], zeroline=False),
+        yaxis=dict(gridcolor=theme["chart_grid"], zeroline=False),
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
     )
 
 
@@ -473,25 +617,30 @@ def score_application(scoring_model, reason_model, application_df: pd.DataFrame)
 
 
 def merge_predictions_with_inputs(pred_df: pd.DataFrame | None, app_df: pd.DataFrame | None) -> pd.DataFrame | None:
+    """
+    Join predictions to application attributes and normalize reason strings for display.
+
+    Uses numpy.vectorize instead of DataFrame.apply(axis=1) for large tables.
+    """
     if pred_df is None or app_df is None:
         return None
 
     merged = pred_df.copy()
-    app_subset = app_df.copy()
 
-    if "Applicant_ID" in merged.columns and "SK_ID_CURR" in app_subset.columns:
-        merged = merged.merge(app_subset, left_on="Applicant_ID", right_on="SK_ID_CURR", how="left")
+    if "Applicant_ID" in merged.columns and "SK_ID_CURR" in app_df.columns:
+        merged = merged.merge(app_df, left_on="Applicant_ID", right_on="SK_ID_CURR", how="left")
 
-    for col in ["Reason_1", "Reason_2", "Reason_3"]:
-        if col in merged.columns:
-            merged[col] = merged.apply(
-                lambda row: normalize_reason_text(
-                    row[col],
-                    row.get("Decision"),
-                    row.get("Risk_Tier")
-                ),
-                axis=1
-            )
+    reason_cols = [c for c in ["Reason_1", "Reason_2", "Reason_3"] if c in merged.columns]
+    if not reason_cols:
+        return merged
+
+    n = len(merged)
+    decisions = merged["Decision"].values if "Decision" in merged.columns else np.full(n, None, dtype=object)
+    tiers = merged["Risk_Tier"].values if "Risk_Tier" in merged.columns else np.full(n, None, dtype=object)
+    vnorm = np.vectorize(normalize_reason_text, otypes=[object])
+
+    for col in reason_cols:
+        merged[col] = vnorm(merged[col].values, decisions, tiers)
 
     return merged
 
@@ -550,48 +699,61 @@ def demographic_summary(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
 
 
 
-def make_decision_chart(df: pd.DataFrame):
+def make_decision_chart(df: pd.DataFrame, theme: dict[str, Any]):
     counts = df["Decision"].value_counts().rename_axis("Decision").reset_index(name="Count")
     fig = px.bar(counts, x="Decision", y="Count", color="Decision", color_discrete_map=DECISION_COLORS, text="Count")
-    fig.update_layout(showlegend=False, plot_bgcolor="white", paper_bgcolor="white")
-    fig.update_traces(marker_line_width=0)
+    fig.update_layout(showlegend=False)
+    fig.update_traces(marker_line_width=0, textposition="outside")
+    apply_chart_theme(fig, theme)
     return fig
 
 
-
-def make_risk_chart(df: pd.DataFrame):
+def make_risk_chart(df: pd.DataFrame, theme: dict[str, Any]):
     counts = df["Risk_Tier"].value_counts().sort_index().rename_axis("Risk_Tier").reset_index(name="Count")
     fig = px.bar(counts, x="Risk_Tier", y="Count", color="Risk_Tier", color_discrete_map=RISK_TIER_COLORS, text="Count")
-    fig.update_layout(showlegend=False, plot_bgcolor="white", paper_bgcolor="white")
-    fig.update_traces(marker_line_width=0)
+    fig.update_layout(showlegend=False)
+    fig.update_traces(marker_line_width=0, textposition="outside")
+    apply_chart_theme(fig, theme)
     return fig
 
 
-
-def make_reason_chart(df: pd.DataFrame, color_col: str | None = None):
+def make_reason_chart(df: pd.DataFrame, theme: dict[str, Any], color_col: str | None = None):
     if color_col and color_col in df.columns:
         color_map = RISK_TIER_COLORS if color_col == "Risk_Tier" else DECISION_COLORS
-        fig = px.bar(df, x="Count", y="Reason", color=color_col, orientation="h", color_discrete_map=color_map, text="Count")
+        fig = px.bar(
+            df, x="Count", y="Reason", color=color_col, orientation="h",
+            color_discrete_map=color_map, text="Count",
+        )
     else:
-        fig = px.bar(df, x="Count", y="Reason", orientation="h", color_discrete_sequence=[ORANGE], text="Count")
-    fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", yaxis={"categoryorder": "total ascending"})
-    fig.update_traces(marker_line_width=0)
+        fig = px.bar(
+            df, x="Count", y="Reason", orientation="h",
+            color_discrete_sequence=[theme["accent_bar"]], text="Count",
+        )
+    fig.update_layout(yaxis={"categoryorder": "total ascending"})
+    fig.update_traces(marker_line_width=0, textposition="outside")
+    apply_chart_theme(fig, theme)
     return fig
 
 
-
-def make_demographic_chart(df: pd.DataFrame, group_col: str):
-    fig = px.bar(df, x=group_col, y="Count", color="Decision", barmode="group", color_discrete_map=DECISION_COLORS, text="Count")
-    fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", xaxis_title=labelize(group_col), yaxis_title="Count")
-    fig.update_traces(marker_line_width=0)
+def make_demographic_chart(df: pd.DataFrame, group_col: str, theme: dict[str, Any]):
+    fig = px.bar(
+        df, x=group_col, y="Count", color="Decision", barmode="group",
+        color_discrete_map=DECISION_COLORS, text="Count",
+    )
+    fig.update_layout(xaxis_title=labelize(group_col), yaxis_title="Count")
+    fig.update_traces(marker_line_width=0, textposition="outside")
+    apply_chart_theme(fig, theme)
     return fig
 
 
-
-def make_tier_donut(df: pd.DataFrame):
+def make_tier_donut(df: pd.DataFrame, theme: dict[str, Any]):
     counts = df["Risk_Tier"].value_counts().sort_index().rename_axis("Risk_Tier").reset_index(name="Count")
-    fig = px.pie(counts, names="Risk_Tier", values="Count", hole=0.58, color="Risk_Tier", color_discrete_map=RISK_TIER_COLORS)
-    fig.update_layout(paper_bgcolor="white")
+    fig = px.pie(
+        counts, names="Risk_Tier", values="Count", hole=0.58,
+        color="Risk_Tier", color_discrete_map=RISK_TIER_COLORS,
+    )
+    fig.update_traces(textinfo="percent+label", textfont_size=12)
+    apply_chart_theme(fig, theme)
     return fig
 
 
@@ -617,7 +779,7 @@ def display_pd_definition():
 
 
 
-def display_overview_section(df: pd.DataFrame):
+def display_overview_section(df: pd.DataFrame, theme: dict[str, Any]):
     st.subheader("Portfolio Overview")
     display_pd_definition()
 
@@ -649,15 +811,15 @@ def display_overview_section(df: pd.DataFrame):
     with chart_col1:
         if "Decision" in df.columns:
             st.write("**Decision Distribution**")
-            st.plotly_chart(make_decision_chart(df), use_container_width=True)
+            st.plotly_chart(make_decision_chart(df, theme), use_container_width=True, config=PLOTLY_CONFIG)
     with chart_col2:
         if "Risk_Tier" in df.columns:
             st.write("**Risk Tier Distribution**")
-            st.plotly_chart(make_risk_chart(df), use_container_width=True)
+            st.plotly_chart(make_risk_chart(df, theme), use_container_width=True, config=PLOTLY_CONFIG)
     with chart_col3:
         if "Risk_Tier" in df.columns:
             st.write("**Risk Tier Mix**")
-            st.plotly_chart(make_tier_donut(df), use_container_width=True)
+            st.plotly_chart(make_tier_donut(df, theme), use_container_width=True, config=PLOTLY_CONFIG)
 
     st.write("**Contributing Factors by Risk Tier**")
     tier_summary = reason_summary_by_tier(df)
@@ -668,7 +830,11 @@ def display_overview_section(df: pd.DataFrame):
         st.dataframe(rename_display_columns(tier_view), use_container_width=True, hide_index=True)
     with right:
         if not tier_view.empty:
-            st.plotly_chart(make_reason_chart(tier_view, "Risk_Tier"), use_container_width=True)
+            st.plotly_chart(
+                make_reason_chart(tier_view, theme, "Risk_Tier"),
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+            )
 
 
 
@@ -711,7 +877,7 @@ def display_prediction_browser(df: pd.DataFrame):
 
 
 
-def display_reason_analysis(df: pd.DataFrame):
+def display_reason_analysis(df: pd.DataFrame, theme: dict[str, Any]):
     st.subheader("Reason Code Analytics")
 
     col1, col2 = st.columns(2)
@@ -721,7 +887,7 @@ def display_reason_analysis(df: pd.DataFrame):
         overall = reason_summary_table(df).head(10)
         st.dataframe(rename_display_columns(overall), use_container_width=True, hide_index=True)
         if not overall.empty:
-            st.plotly_chart(make_reason_chart(overall), use_container_width=True)
+            st.plotly_chart(make_reason_chart(overall, theme), use_container_width=True, config=PLOTLY_CONFIG)
 
     with col2:
         st.write("**Top Reasons by Decision**")
@@ -730,11 +896,15 @@ def display_reason_analysis(df: pd.DataFrame):
         decision_view = by_decision[by_decision["Decision"] == selected_decision].head(10)
         st.dataframe(rename_display_columns(decision_view), use_container_width=True, hide_index=True)
         if not decision_view.empty:
-            st.plotly_chart(make_reason_chart(decision_view, "Decision"), use_container_width=True)
+            st.plotly_chart(
+                make_reason_chart(decision_view, theme, "Decision"),
+                use_container_width=True,
+                config=PLOTLY_CONFIG,
+            )
 
 
 
-def display_demographic_analysis(df: pd.DataFrame):
+def display_demographic_analysis(df: pd.DataFrame, theme: dict[str, Any]):
     st.subheader("Decision Patterns by Applicant Profile")
     demographic_options = [col for col in DEMOGRAPHIC_COLUMNS if col in df.columns]
 
@@ -759,7 +929,11 @@ def display_demographic_analysis(df: pd.DataFrame):
     with col1:
         st.dataframe(rename_display_columns(summary), use_container_width=True, hide_index=True)
     with col2:
-        st.plotly_chart(make_demographic_chart(summary, selected_demo), use_container_width=True)
+        st.plotly_chart(
+            make_demographic_chart(summary, selected_demo, theme),
+            use_container_width=True,
+            config=PLOTLY_CONFIG,
+        )
 
 
 
@@ -853,35 +1027,60 @@ def display_single_application_section(scoring_model, reason_model):
 
 
 def main():
-    st.set_page_config(page_title="Credit Risk App", layout="wide")
-    inject_theme()
+    st.set_page_config(page_title="Credit Risk App", layout="wide", initial_sidebar_state="expanded")
+
+    with st.sidebar:
+        st.markdown("### Appearance")
+        appearance = st.radio(
+            "Theme",
+            ["Light", "Dark"],
+            horizontal=True,
+            help="Light and dark palettes use distinct chart backgrounds and text colors for readability.",
+        )
+        theme = THEME_DARK if appearance == "Dark" else THEME_LIGHT
+
+    inject_theme(theme)
+
     st.title(APP_TITLE)
-    st.write("An interactive credit risk scoring interface with applicant scoring, test-set prediction browsing, and analytics for decisions, tiers, and reason codes.")
+    st.write(
+        "An interactive credit risk scoring interface with applicant scoring, test-set prediction browsing, "
+        "and analytics for decisions, tiers, and reason codes."
+    )
 
     if not SCORING_MODEL_PATH.exists() or not REASON_MODEL_PATH.exists():
-        st.error("Required Phase 6 model files were not found. Run src/decisioning.py first to create: phase6_calibrated_scoring_model.joblib and phase6_reason_code_logreg.joblib")
+        st.error(
+            "Required Phase 6 model files were not found. Run src/train_phase6.py first to create: "
+            "phase6_calibrated_scoring_model.joblib and phase6_reason_code_logreg.joblib"
+        )
         st.stop()
 
+    # Models once per session; merged portfolio cached (I/O + merge + reason normalization).
     scoring_model, reason_model = load_models()
-    pred_df = load_prediction_data()
-    app_df = load_application_test_data()
-    merged_df = merge_predictions_with_inputs(pred_df, app_df)
+    try:
+        merged_df = load_merged_portfolio()
+    except Exception as exc:
+        st.error("Failed to load data required for the dashboard.")
+        st.code(str(exc))
+        st.stop()
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Portfolio Dashboard",
         "Prediction Browser",
         "Demographic Analytics",
         "Score New Applicant",
-        "Glossary"
+        "Glossary",
     ])
 
     with tab1:
         if merged_df is not None:
-            display_overview_section(merged_df)
+            display_overview_section(merged_df, theme)
             st.divider()
-            display_reason_analysis(merged_df)
+            display_reason_analysis(merged_df, theme)
         else:
-            st.info("Prediction report not found yet. Run src/decisioning.py to generate reports/phase6_application_test_predictions.csv.")
+            st.info(
+                "Prediction report not found yet. Run src/train_phase6.py to generate "
+                "reports/phase6_application_test_predictions.csv."
+            )
 
     with tab2:
         if merged_df is not None:
@@ -891,9 +1090,11 @@ def main():
 
     with tab3:
         if merged_df is not None:
-            display_demographic_analysis(merged_df)
+            display_demographic_analysis(merged_df, theme)
         else:
-            st.info("Demographic analytics are unavailable until application_test.csv and predictions are both available.")
+            st.info(
+                "Demographic analytics are unavailable until application_test.csv and predictions are both available."
+            )
 
     with tab4:
         display_single_application_section(scoring_model, reason_model)

@@ -1,9 +1,17 @@
+"""
+Feature definitions and preprocessing for Home Credit–style application tables.
+
+Training and inference share the same CORE_FEATURES and clean_features() so that
+scores and reason codes stay aligned with the fitted sklearn pipelines.
+"""
+
 import numpy as np
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import OneHotEncoder
 
+# Columns expected in raw train/test CSVs (TARGET only on train).
 CORE_FEATURES = [
     "CODE_GENDER", "CNT_CHILDREN", "NAME_FAMILY_STATUS",
     "CNT_FAM_MEMBERS", "NAME_EDUCATION_TYPE", "DAYS_BIRTH",
@@ -19,6 +27,7 @@ CORE_FEATURES = [
     "TARGET"
 ]
 
+# Engineered + raw numeric fields fed through median imputation (after clean_features).
 NUMERIC_FEATURES = [
     "CNT_CHILDREN", "CNT_FAM_MEMBERS", "AMT_INCOME_TOTAL",
     "OWN_CAR_AGE", "DAYS_EMPLOYED", "DAYS_REGISTRATION",
@@ -39,18 +48,32 @@ CATEGORICAL_FEATURES = [
 
 
 def select_core_features(df):
+    """Return only CORE_FEATURES (caller must ensure columns exist)."""
     return df[CORE_FEATURES].copy()
 
 
 def clean_features(df):
+    """
+    Domain cleaning and feature engineering on a copy of the frame.
+
+    - AGE / EMPLOYMENT_YEARS: from DAYS_* (Kaggle uses negative day counts).
+    - 365243 in DAYS_EMPLOYED is a sentinel for “unknown” → treated as NaN.
+    - DTI_PROXY / LOAN_TO_INCOME: ratios; divide-by-zero yields inf and is handled
+      downstream by imputation inside the sklearn pipeline.
+    """
     df = df.copy()
 
-    df["AGE"] = -df["DAYS_BIRTH"] / 365
-    df["DAYS_EMPLOYED"] = df["DAYS_EMPLOYED"].replace(365243, np.nan)
-    df["EMPLOYMENT_YEARS"] = -df["DAYS_EMPLOYED"] / 365
+    # Age in years (DAYS_BIRTH is negative days since birth).
+    df["AGE"] = -df["DAYS_BIRTH"] / 365.0
 
-    df["DTI_PROXY"] = df["AMT_ANNUITY"] / df["AMT_INCOME_TOTAL"]
-    df["LOAN_TO_INCOME"] = df["AMT_CREDIT"] / df["AMT_INCOME_TOTAL"]
+    # Unemployed / unknown employment uses 365243 in the raw data.
+    df["DAYS_EMPLOYED"] = df["DAYS_EMPLOYED"].replace(365243, np.nan)
+    df["EMPLOYMENT_YEARS"] = -df["DAYS_EMPLOYED"] / 365.0
+
+    # Repayment burden and affordability (explicit np.errstate avoids numpy warnings in logs).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        df["DTI_PROXY"] = df["AMT_ANNUITY"] / df["AMT_INCOME_TOTAL"]
+        df["LOAN_TO_INCOME"] = df["AMT_CREDIT"] / df["AMT_INCOME_TOTAL"]
 
     df = df.drop(columns=["DAYS_BIRTH"])
 
@@ -58,6 +81,11 @@ def clean_features(df):
 
 
 def build_preprocessor():
+    """
+    sklearn ColumnTransformer: median/mode imputation + one-hot for categoricals.
+
+    handle_unknown='ignore' keeps inference stable when a category never appeared in train.
+    """
     numeric_transformer = Pipeline(steps=[
         ("imputer", SimpleImputer(strategy="median"))
     ])
