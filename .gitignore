@@ -43,3 +43,5 @@ htmlcov/
 
 # Streamlit
 .streamlit/secrets.toml
+data/home-credit-default-risk/
+
