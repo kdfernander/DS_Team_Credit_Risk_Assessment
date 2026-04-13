@@ -37,11 +37,10 @@ build/
 # Testing / coverage
 .pytest_cache/
 .coverage
-htmlcov/
-.mypy_cache/
+htmlcov/.mypy_cache/
 .ruff_cache/
 
 # Streamlit
 .streamlit/secrets.toml
-data/home-credit-default-risk/
 
+data/home-credit-default-risk/
