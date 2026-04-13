@@ -25,7 +25,7 @@ from src.preprocess import CORE_FEATURES, clean_features  # noqa: E402
 APP_TITLE = "Credit Risk Assessment & Loan Default Prediction"
 SCORING_MODEL_PATH = ROOT / "models" / "phase6_calibrated_scoring_model.joblib"
 REASON_MODEL_PATH = ROOT / "models" / "phase6_reason_code_logreg.joblib"
-APPLICATION_TEST_PATH = ROOT / "data" / "sample_application_test.csv"
+APPLICATION_TEST_PATH = ROOT / "data" / "app_input_sample_v2.csv.csv"
 PREDICTIONS_PATH = ROOT / "reports" / "phase6_application_test_predictions.csv"
 DATA_DICTIONARY_PATH = ROOT / "data" / "data_dictionary.csv"
 
